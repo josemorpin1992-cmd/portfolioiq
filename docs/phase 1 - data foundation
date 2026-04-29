@@ -1,0 +1,165 @@
+# Phase 1 — Data foundation
+## Goal
+Build a simple, clean dataset that the agent can query reliably. No agent code. No LLM calls. Minimum viable fields that answer the eval questions. Get it working fast and move to the agent.
+## Business context
+Simulating an Australian retail bank deposit book. Four customer segments, three lifecycle stages, real RBA rate history from Jan 2023 to Dec 2024. Simple enough to build in one session. Rich enough to answer meaningful business questions.
+---
+## Schema — three tables
+### customer
+| Field | Type | Values |
+|-------------|------|--------|
+| customer_id | TEXT | unique identifier |
+| segment | TEXT | RETAIL_INDIVIDUAL, SELF_DIRECTED_INVESTOR, BUSINESS, INSTITUTIONAL |
+| state | TEXT | NSW, VIC, QLD, WA, SA, ACT, TAS, NT |
+| age_band | TEXT | 18-24, 25-34, 35-49, 50-64, 65+ — null for BUSINESS and INSTITUTIONAL |
+| channel | TEXT | BRANCH, ONLINE, BROKER, PHONE |
+| tenure_years | INT | 1-25 |
+### deposit
+| Field | Type | Values |
+|-----------------|-------|--------|
+| deposit_id | TEXT | unique identifier |
+| customer_id | TEXT | foreign key to customer |
+| term_months | INT | 1, 3, 6, 12, 24 |
+| balance | FLOAT | AUD — log-normal by segment |
+| advertised_rate | FLOAT | % p.a. |
+| contracted_rate | FLOAT | % p.a. — always <= advertised_rate |
+| nim | FLOAT | % p.a. — always positive |
+| start_date | DATE | within Jan 2023 to Dec 2024 |
+| maturity_date | DATE | start_date + term in months |
+| status | TEXT | ACTIVE, MATURED, WITHDRAWN |
+| lifecycle | TEXT | NEW_DEPOSIT, RENEWING, EXISTING |
+### market_rates
+| Field | Type | Values |
+|----------------|-------|--------|
+| week_start_date| DATE | one row per week |
+| rba_cash_rate | FLOAT | actual RBA history |
+---
+## Volume
+| Metric | Value |
+|-----------------|-------|
+| Customers | 500 |
+| Deposit records | ~5,000 |
+| Date range | Jan 2023 to Dec 2024 |
+---
+## Segment distribution
+| Segment | % of customers | Avg deposits per customer |
+|------------------------|----------------|--------------------------|
+| RETAIL_INDIVIDUAL | 60% | 6 |
+| SELF_DIRECTED_INVESTOR | 20% | 12 |
+| BUSINESS | 15% | 8 |
+| INSTITUTIONAL | 5% | 16 |
+---
+## Balance ranges — log-normal distribution
+| Segment | Min | Median | Max |
+|------------------------|------------|------------|-------------|
+| RETAIL_INDIVIDUAL | $5,000 | $45,000 | $250,000 |
+| SELF_DIRECTED_INVESTOR | $50,000 | $350,000 | $2,000,000 |
+| BUSINESS | $100,000 | $800,000 | $5,000,000 |
+| INSTITUTIONAL | $1,000,000 | $8,000,000 | $50,000,000 |
+---
+## Product term distribution by segment (%)
+| Term | RETAIL_INDIVIDUAL | SELF_DIRECTED_INVESTOR | BUSINESS | INSTITUTIONAL |
+|-----------|-------------------|------------------------|----------|---------------|
+| 1 month | 10 | 5 | 25 | 30 |
+| 3 months | 20 | 10 | 35 | 35 |
+| 6 months | 30 | 20 | 25 | 20 |
+| 12 months | 30 | 40 | 12 | 12 |
+| 24 months | 10 | 25 | 3 | 3 |
+---
+## Rate construction
+advertised_rate = rba_cash_rate + segment_premium + term_premium
+contracted_rate = advertised_rate - negotiation_discount
+nim = contracted_rate - (rba_cash_rate - 0.30%)
+### Segment premium
+| Segment | Premium |
+|------------------------|------------------|
+| INSTITUTIONAL | -0.10% to 0.00% |
+| BUSINESS | +0.00% to +0.20% |
+| SELF_DIRECTED_INVESTOR | +0.10% to +0.30% |
+| RETAIL_INDIVIDUAL | +0.20% to +0.50% |
+### Term premium
+| Term | Premium |
+|-----------|---------|
+| 1 month | +0.00% |
+| 3 months | +0.10% |
+| 6 months | +0.20% |
+| 12 months | +0.35% |
+| 24 months | +0.40% |
+### Negotiation discount
+| Segment | Discount |
+|------------------------|-----------------|
+| INSTITUTIONAL | 0.10% to 0.30% |
+| SELF_DIRECTED_INVESTOR | 0.05% to 0.15% |
+| BUSINESS | 0.00% to 0.10% |
+| RETAIL_INDIVIDUAL | 0.00% to 0.05% |
+### NIM targets
+| Condition | NIM range |
+|-----------------|----------------|
+| Low rate period | 1.80% to 2.50% |
+| High rate period | 1.20% to 1.80% |
+NIM compresses as rates rise.
+---
+## RBA cash rate history
+| Period | Cash rate |
+|--------------|-----------|
+| Jan 2023 | 3.10% |
+| Feb 2023 | 3.35% |
+| Mar 2023 | 3.60% |
+| Apr 2023 | 3.85% |
+| May 2023 | 3.85% |
+| Jun 2023 | 4.10% |
+| Jul 2023 | 4.10% |
+| Aug 2023 | 4.10% |
+| Sep 2023 | 4.10% |
+| Oct 2023 | 4.35% |
+| Nov 2023 | 4.35% |
+| Dec 2023 | 4.35% |
+| Jan-Dec 2024 | 4.35% |
+---
+## Lifecycle distribution
+| Stage | % |
+|-------------|-----|
+| NEW_DEPOSIT | 20% |
+| RENEWING | 30% |
+| EXISTING | 50% |
+---
+## Data quality rules
+- contracted_rate <= advertised_rate always
+- nim > 0 always
+- maturity_date > start_date always
+- age_band is null for BUSINESS and INSTITUTIONAL
+- no orphaned customer_id in deposit table
+---
+## Files we build
+| File | Purpose |
+|--------------------|----------------------------|
+| data/generate.py | synthetic data generator |
+| data/schema.sql | database schema definition |
+| eval/questions.py | 30 ground truth questions |
+---
+## Definition of done
+- [ ] generate.py runs: uv run python data/generate.py
+- [ ] SQLite database created with all three tables
+- [ ] 500 customers and ~5,000 deposit records
+- [ ] RBA rate joined to every deposit by start_date
+- [ ] All segments at correct distribution
+- [ ] Balance ranges log-normal by segment
+- [ ] 30 ground truth questions written
+- [ ] Every question answerable by the database
+---
+## Eval questions — 30 total
+| Category | Count | Focus |
+|-------------|-------|-------|
+| Descriptive | 10 | trends, comparisons, breakdowns |
+| Scenario | 10 | rate shifts, pricing deltas, what-if |
+| Time-based | 5 | WoW, YoY, last N weeks |
+| Segment | 5 | by customer type, demographics |
+---
+## Rules
+- No agent code in this phase
+- No LLM calls in this phase
+- Only add a field when an eval question needs it
+- Database must answer all 30 eval questions before Phase 2 begins
+---
+## Next phase
+Phase 2 — Text-to-SQL layer. Do not start until every checkbox above is ticked.
